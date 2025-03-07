@@ -1,160 +1,244 @@
-#include <Arduino.h>
-#include <SPI.h>
+/*
+ * Copyright (c) 2024/2025 Tobias Guggenberger - software@guggenberger.me
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+#include <Ethernet.h>
+#include <PubSubClient.h> // mqtt
+#include <SPI.h> // Seriell
+//#include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-/////////////////////////////////////////////////////////////////////////// Funktionsprototypen
-void loop                             ();
-void findSensors              ();
+//************************************************************************** LAN Network definieren 
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x05 };
+IPAddress ip(10, 110, 0, 10); //comment this line if you are using DHCP
 
-/////////////////////////////////////////////////////////////////////////// DS18b20
-#define SENSOR_PIN 2 // ESP32 Pin OneWire
-float tempC; // temperature in Celsius
-#define TEMPERATURE_PRECISION 12
+//IPAddress subnet(255, 255, 0, 0); // Subnet Mask
 
-OneWire oneWire(SENSOR_PIN);
-DallasTemperature DS18B20(&oneWire);
+IPAddress mqtt_server(10, 110, 0, 3);  // IP-Adresse des MQTT Brokers im lokalen Netzwerk
 
-DeviceAddress tempDeviceAddress; // Verzeichniss zum Speichern von Sensor Adressen
-int numberOfDevices; // Anzahl der gefundenen Sensoren
- 
-void findSensors()
-{
-  byte address[8];                                 // Store 8 ROM bytes of sensor
-  byte noOfSensor = 0, i = 0, ok = 0, flag = 0;    // Diverse Hilfsvariablen
-  Serial.println("DS18xx 1-Wire Temperatursensor Scanner");
-  Serial.println();
-  Serial.println("Suche...");
-  Serial.println();
-  /***  Das erste Byte enthält den Familiencode der hier ausgewertet wird  ***/
-  while (oneWire.search(address))
-  {
-    Serial.println("-----------------------------------------------");
-    Serial.print(noOfSensor += 1);
-    Serial.print(". ");
-    switch (address[0]) {
-      case 0x10:
-        Serial.println("Sensor ist ein DS18S20 oder aelterer DS1820: ");
-        flag = true;                               //
-        break;
-      case 0x28:
-        Serial.println("Sensor ist ein DS18B20: ");
-        flag = true;                               //
-        break;
-      case 0x22:
-        Serial.println("Sensor ist ein DS1822: ");
-        flag = true;                               //
-        break;
-      default:
-        Serial.println("Keinen gueltigen DS18xx Sensor gefunden!");
-        return;
+EthernetClient ethClient;
+PubSubClient client(ethClient);
+
+//************************************************************************** Variablen
+char stgFromFloat[10];
+char msgToPublish[60];
+char textTOtopic[60];
+
+//************************************************************************** WIRE Bus
+#define ONE_WIRE_BUS 2
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+
+//************************************************************************** Temp. Sensor ds18b20 HEX zuweisen
+/*
+DS18B20 Anschluss
+rt  + 5V
+sw  GND
+ge  4,7 kOhm gegen rt (Pin 2 Uno)
+
+Steckerbelegung Sensoren
+************************
+L     + 5V  (braun)
+N     GND   (blau)
+GrGe  Datenleitung  (grge)
+
+*/
+DeviceAddress temp_sensor_1    = { 0x28, 0x61, 0x64, 0x0A, 0xFD, 0x6A, 0xA2, 0xCC }; 
+const char* topic_sensor_1     = "Temperatur/GIMADVFachmarkt/Raumtemp";
+
+DeviceAddress temp_sensor_2    = { 0x28, 0x61, 0x64, 0x0A, 0xFD, 0x37, 0x34, 0xFE }; 
+const char* topic_sensor_2     = "Temperatur/GIMADVFachmarkt/Schranktemp";
+
+/*
+DeviceAddress temp_sensor_3    = { 0x28, 0x61, 0x64, 0x0A, 0xF0, 0x1D, 0xFA, 0x1D }; 
+const char* topic_sensor_3     = "Heizung/Holz/Raumtemp";
+*/
+
+//************************************************************************** Funktionsprototypen
+void loop                       ();
+void setup                      ();
+void reconnect                  ();
+void callback(char* topic, byte* payload, unsigned int length);
+void mqtt_reconnect_intervall   ();
+void temp_messen                ();
+void(* resetFunc) (void) = 0;
+
+
+//************************************************************************** Inter
+
+unsigned long previousMillis_mqtt_reconnect = 0; // 
+unsigned long interval_mqtt_reconnect = 500; 
+
+
+unsigned long previousMillis_temp_messen = 0; // Temperatur messen aufrufen
+unsigned long interval_temp_messen = 10000; 
+
+//************************************************************************** SETUP
+void setup() {
+  Serial.begin(115200);
+
+// ------------------------------------------------------------------------- Ethernet starten
+  Ethernet.begin(mac, ip);
+  // Pause Netzwerk Antwort
+  delay(1500);  
+
+///////////////////////////////////////////////////////////////////////////  MQTT Broker init
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
+
+}
+
+//************************************************************************** mqtt - reconnect
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Verbindung zum MQTT-Server aufbauen...");
+    if (client.connect("Temp_GIMA_Fachmarkt", "hitesh", "RO9UZ7wANCXzmy")) {
+      Serial.println("verbunden");
+      //client.subscribe("Werktor/K7");
+    } else {
+      Serial.print("Fehler, rc=");
+      Serial.print(client.state());
+      Serial.println(" erneut versuchen in 5 Sekunden");
+      delay(5000);
     }
-    /***  Zeige alle 64 Adressbits sofern flag = 1 (true) ist, also alles OK  ***/
-    if (flag == true)
-    {
-      if (OneWire::crc8(address, 7) != address[7])
-      {
-        Serial.println("CRC Pruefung nicht bestanden! Fehler!");
-      }
-      else
-      {
-        /***  Da bis hierhin alles Okay ist, zeige nun alle 8 Bytes  ***/
-        Serial.println("HEx Ausgabe der Adresse:");
-        for (i = 0; i < 8; i++)
-        {
-          Serial.print("0x");
-          if (address[i] <= 0xF)                   // Führende 0 ggf. ergänzen
-          {
-            Serial.print("0");
-          }
-          Serial.print(address[i], HEX);           // Darstellung Hexadezimal
-          if (i < 7)
-          {
-            Serial.print(", ");
-          }
-        }
-        Serial.println("");
-        Serial.println("Adresse aus allen 8 Bytes");
-        /***  Da bis hierhin alles Okay ist, zeige nun alle 8 Bytes  ***/
-        for (i = 0; i < 8; i++)
-        {
-
-          Serial.print(address[i]);           // Darstellung Hexadezimal
-          if (i < 7)
-          {
-            Serial.print(" - ");
-          }
-        }
-        Serial.println("");
-
-
-        ok = true;                                 // ok = 1
-      }
-    }                                              // Ende der if Schleife
-  }                                                // Ende der while Schleife
-  if (ok == false)                                 // ok=0, no valid sensor found
-  {
-    Serial.println("Keinen gueltigen DS18xx Sensor gefunden!");
   }
-  Serial.println();
-  Serial.println("Suche abgeschlossen! Druecke Reset Taster fuer Neustart.");
-  Serial.println();
-}
- 
-void loop(void)
-{
-   // Aufruf der Funktion sensors.requestTemperatures()
-   // Dadurch werden alle werte abgefragt.
-   Serial.print("Abfrage der Temperatur... ");
-   DS18B20.requestTemperatures();
-   Serial.println("DONE");
- 
-   // Ausgabe der Daten für jeden Sensor
-   for(int i=0 ;i<numberOfDevices; i++) {
-      float tempC = DS18B20.getTempCByIndex(i);
-      Serial.print("Sensor ");
-      Serial.print(i, DEC);
-      Serial.print(" hat grad Celsius: ");
-      Serial.println(tempC);
-   }
-   delay(3000);
 }
 
-void setup(void)
-{
-   Serial.begin(115200);
-   Serial.println("Abfrage mehrerer Dallas Temperatur Sensoren");
-   Serial.println("-------------------------------------------");
- 
-findSensors(); 
+//************************************************************************** mqtt - callback
+void callback(char* topic, byte* payload, unsigned int length) {
+
+ Serial.print("Nachricht empfangen [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  
+  // Payload in einen String umwandeln
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  Serial.println(message);
+
+/*
+// -------------------------------------------------------- Beispiel Topic Auswertung
+// -------------------------------------------------------- Wird nur im Relaisbetrieb benötigt
+  if (String(topic) == "Werktor/K3") {
+    if (message == "on") {
+        Serial.println("Relais K3 -> AN");
+        pcf8574.digitalWrite(P3, !HIGH);
+    } 
+    else if (message == "off") {
+        Serial.println("Relais K3 -> AUS");
+        pcf8574.digitalWrite(P3, !LOW);
+    } 
+    else { }} else { }
+
+*/
+
+}
 
 
-   // Suche der Sensoren
-   Serial.println("Suche Temperatur Sensoren...");
-   DS18B20.begin();
-   numberOfDevices = DS18B20.getDeviceCount();
- 
-   Serial.print("Habe ");
-   Serial.print(numberOfDevices, DEC);
-   Serial.println(" Sensoren gefunden.");
- 
-   // Setzen der Genauigkeit
-   for(int i=0 ;i<numberOfDevices; i++) {
-      if(DS18B20.getAddress(tempDeviceAddress, i)) {
-         DS18B20.setResolution(tempDeviceAddress, TEMPERATURE_PRECISION);
-        /*
-          Serial.println("Get Adress");
-         if (tempDeviceAddress[i] < 16) Serial.print("0");
-          Serial.print(tempDeviceAddress[i], HEX);
-          */
-         Serial.print("Sensor ");
-         Serial.print(i);
-         Serial.print(" hat eine genauigkeit von ");
-         Serial.println(DS18B20.getResolution(tempDeviceAddress), DEC);
-      }
-   }
-   Serial.println("");
 
-   delay(500000);
- 
+//************************************************************************** Temperatur auslesen
+void temp_messen() {
+
+sensors.requestTemperatures();
+
+////////////////////////////////////////////////////////// Sensor 1
+  int currentTemp1 = sensors.getTempC(temp_sensor_1);
+  dtostrf(currentTemp1, 4, 2, stgFromFloat);
+ Serial.println(currentTemp1);
+   if ((currentTemp1 == -127)||(currentTemp1 == 85))  { 
+     } 
+    else 
+        {   
+  sprintf(msgToPublish, "%s", stgFromFloat);
+  sprintf(textTOtopic, "%s", topic_sensor_1);
+  client.publish(textTOtopic, msgToPublish);
+ }
+
+
+ ////////////////////////////////////////////////////////// Sensor 2
+  int currentTemp2 = sensors.getTempC(temp_sensor_2);
+  dtostrf(currentTemp2, 4, 2, stgFromFloat);
+ Serial.println(currentTemp2);
+   if ((currentTemp2 == -127)||(currentTemp2 == 85))  { 
+     } 
+    else 
+        {   
+  sprintf(msgToPublish, "%s", stgFromFloat);
+  sprintf(textTOtopic, "%s", topic_sensor_2);
+  client.publish(textTOtopic, msgToPublish);
+ }
+
+/*
+ ////////////////////////////////////////////////////////// Sensor 3
+  int currentTemp3 = sensors.getTempC(temp_sensor_3);
+  dtostrf(currentTemp3, 4, 2, stgFromFloat);
+ Serial.println(currentTemp1);
+   if ((currentTemp3 == -127)||(currentTemp3 == 85))  { 
+     } 
+    else 
+        {   
+  sprintf(msgToPublish, "%s", stgFromFloat);
+  sprintf(textTOtopic, "%s", topic_sensor_3);
+  client.publish(textTOtopic, msgToPublish);
+ }
+*/
+
+}
+
+
+//************************************************************************** mqtt_reconnect_intervall 
+void mqtt_reconnect_intervall() {
+    if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();
+}
+
+//************************************************************************** LOOP
+void loop() {
+
+
+// MQTT Abfrage
+    if (millis() - previousMillis_mqtt_reconnect > interval_mqtt_reconnect) {
+      previousMillis_mqtt_reconnect = millis(); 
+      mqtt_reconnect_intervall();
+    }  
+
+  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ Temperatur messen
+  if (millis() - previousMillis_temp_messen > interval_temp_messen) {
+      previousMillis_temp_messen= millis(); 
+      // Prüfen der Panelenspannung
+      //Serial.println("Temperatur messen");
+      temp_messen();
+    }
+
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ Arduino Reset
+if ( millis()  >= 5000000) resetFunc(); // Reset alle 10 Min
+
+
 }
