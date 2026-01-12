@@ -192,7 +192,7 @@ sensors.requestTemperatures();
   client.publish(textTOtopic, msgToPublish);
  }
 
-/*
+
  ////////////////////////////////////////////////////////// Sensor 3
   int currentTemp3 = sensors.getTempC(temp_sensor_3);
   dtostrf(currentTemp3, 4, 2, stgFromFloat);
@@ -205,7 +205,7 @@ sensors.requestTemperatures();
   sprintf(textTOtopic, "%s", topic_sensor_3);
   client.publish(textTOtopic, msgToPublish);
  }
-*/
+
 
 }
 
