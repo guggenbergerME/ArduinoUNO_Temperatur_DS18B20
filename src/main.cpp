@@ -64,14 +64,13 @@ GrGe  Datenleitung  (grge)
 
 */
 DeviceAddress temp_sensor_1    = { 0x28, 0x61, 0x64, 0x0A, 0xFD, 0x69, 0x04, 0xEB }; 
-const char* topic_sensor_1     = "Temperatur/Heizomat/EintragRohr/1";
+const char* topic_sensor_1     = "Temperatur/Heizomat/sensor1";
 
 DeviceAddress temp_sensor_2    = { 0x28, 0x61, 0x64, 0x0A, 0xFD, 0x7D, 0x61, 0x66 }; 
-const char* topic_sensor_2     = "Temperatur/Heizomat/EintragRohr/2";
-
+const char* topic_sensor_2     = "Temperatur/Heizomat/sensor2";
 
 DeviceAddress temp_sensor_3    = { 0x28, 0xFF, 0x64, 0x1F, 0x7C, 0x7F, 0x69, 0xE7 }; 
-const char* topic_sensor_3     = "Temperatur/Heizomat/EintragRohr/3";
+const char* topic_sensor_3     = "Temperatur/Heizomat/sensor3";
 
 
 //************************************************************************** Funktionsprototypen
