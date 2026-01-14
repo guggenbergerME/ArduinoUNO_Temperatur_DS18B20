@@ -86,11 +86,11 @@ void(* resetFunc) (void) = 0;
 //************************************************************************** Inter
 
 unsigned long previousMillis_mqtt_reconnect = 0; // 
-unsigned long interval_mqtt_reconnect = 500; 
+unsigned long interval_mqtt_reconnect = 1000; 
 
 
 unsigned long previousMillis_temp_messen = 0; // Temperatur messen aufrufen
-unsigned long interval_temp_messen = 10000; 
+unsigned long interval_temp_messen = 500; 
 
 //************************************************************************** SETUP
 void setup() {
